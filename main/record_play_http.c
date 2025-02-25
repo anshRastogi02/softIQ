@@ -20,12 +20,15 @@
 #include "periph_button.h"
 #include "periph_touch.h"
 #include "periph_adc_button.h"
+#include "esp_timer.h" // Include for timing functions
 
+#include "cJSON.h"
 
 #include "filter_resample.h"
 #include "esp_http_client.h"
 #include "input_key_service.h"
 #include "audio_idf_version.h"
+#include <stdbool.h>
 
 #include "mp3_decoder.h"
 #if (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 1, 0))
@@ -56,7 +59,7 @@ static EventGroupHandle_t EXIT_FLAG;
 esp_err_t _http_stream_event_handle(http_stream_event_msg_t *msg)
 {
     esp_http_client_handle_t http = (esp_http_client_handle_t)msg->http_client;
-    char len_buf[16];
+    char len_buf[32];
     static int total_write = 0;
 
     if (msg->event_id == HTTP_STREAM_PRE_REQUEST) {
@@ -75,7 +78,7 @@ esp_err_t _http_stream_event_handle(http_stream_event_msg_t *msg)
         total_write = 0;
         return ESP_OK;
     }
- 
+
     if (msg->event_id == HTTP_STREAM_ON_REQUEST) {
         // write data
         int wlen = sprintf(len_buf, "%x\r\n", msg->buffer_len);
@@ -118,46 +121,92 @@ esp_err_t _http_stream_event_handle(http_stream_event_msg_t *msg)
     return ESP_OK;
 }
 
+
+static char response_buffer[8];  // Buffer for storing "1" or "0"
+
+esp_err_t _http_event_handler(esp_http_client_event_t *evt) {
+    if (evt->event_id == HTTP_EVENT_ON_DATA) {
+        if (evt->data_len < sizeof(response_buffer) - 1) {
+            memcpy(response_buffer, evt->data, evt->data_len);
+            response_buffer[evt->data_len] = '\0';  // Null-terminate
+        }
+    }
+    return ESP_OK;
+}
+int64_t start_time;
+
+bool wait_for_new_response() {
+    const int max_attempts = 30;  
+    const int delay_ms = 500;     
+    start_time = esp_timer_get_time();
+    for (int i = 0; i < max_attempts; i++) {
+        esp_http_client_config_t config = {
+            .url = "http://192.168.6.25:3000/status",
+            .event_handler = _http_event_handler,
+        };
+
+        esp_http_client_handle_t client = esp_http_client_init(&config);
+        esp_err_t err = esp_http_client_perform(client);
+        esp_http_client_cleanup(client);
+
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Attempt %d: Server Response: %s Latency: %lld ms", i + 1, response_buffer, ((esp_timer_get_time() - start_time) / 1000));
+
+            if (strcmp(response_buffer, "1") == 0) {
+                ESP_LOGI(TAG, "Received '1' - Exiting loop!");
+                return true;
+            }
+        } else {
+            ESP_LOGE(TAG, "HTTP GET failed: %s", esp_err_to_name(err));
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));  // Wait for 500ms before next attempt
+    }
+
+    ESP_LOGI(TAG, "Timeout reached, no '1' received.");
+    return false;
+}
+
 esp_err_t _http_stream_event_handle_read(http_stream_event_msg_t *msg)
 {
     esp_http_client_handle_t http = (esp_http_client_handle_t)msg->http_client;
-    static int total_read = 0;
+    static int total_bytes_received = 0;
 
     if (msg->event_id == HTTP_STREAM_PRE_REQUEST) {
-        // Set request method and headers if needed
-        ESP_LOGI(TAG, "[ + ] HTTP client HTTP_STREAM_PRE_REQUEST");
-        esp_http_client_set_method(http, HTTP_METHOD_GET);
-        total_read = 0;
+        ESP_LOGI(TAG, "[ - ] Preparing to receive audio stream...");
+
+        // Wait until newResponse flag is set to 1
+        if (!wait_for_new_response()) {
+            ESP_LOGE(TAG, "Failed to detect new response. Aborting...");
+            return ESP_FAIL; 
+        }
+
+        ESP_LOGI(TAG, "[✔] Ready to receive audio stream!");
         return ESP_OK;
     }
 
     if (msg->event_id == HTTP_STREAM_ON_REQUEST) {
-        // Receiving data, no action needed here
-        ESP_LOGI(TAG, "[ + ] HTTP client HTTP_STREAM_ON_REQUEST");
+        if (msg->buffer_len > 0) {
+            // Process received audio chunk
+            total_bytes_received += msg->buffer_len;
+            printf("\033[A\33[2K\rTotal bytes received: %d\n", total_bytes_received);
+        }
+        return msg->buffer_len;
+    }
+
+    if (msg->event_id == HTTP_STREAM_POST_REQUEST) {
+        ESP_LOGI(TAG, "[ - ] Finished receiving audio stream.");
         return ESP_OK;
     }
 
-    if (msg->event_id == HTTP_STREAM_ON_RESPONSE) {
-        // Read the received data into the buffer
-        ESP_LOGI(TAG, "[ + ] HTTP client HTTP_STREAM_ON_RESPONSE, received %d bytes", msg->buffer_len);
-
-        if (msg->buffer_len > 0) {
-            total_read += msg->buffer_len;
-            printf("\033[A\33[2K\rTotal bytes received: %d\n", total_read);
-            return msg->buffer_len;  // Indicate data is processed
-        } else {
-            return ESP_FAIL;  // No data received
-        }
-    }
-
     if (msg->event_id == HTTP_STREAM_FINISH_REQUEST) {
-        // Stream has ended
-        ESP_LOGI(TAG, "[ + ] HTTP client HTTP_STREAM_FINISH_REQUEST");
+        ESP_LOGI(TAG, "[ - ] Audio stream completed.");
         return ESP_OK;
     }
 
     return ESP_OK;
 }
+
 
 static audio_element_handle_t create_i2s_stream(int sample_rates, int bits, int channels, audio_stream_type_t type) {
     i2s_stream_cfg_t i2s_cfg = I2S_STREAM_CFG_DEFAULT_WITH_PARA(CODEC_ADC_I2S_PORT, sample_rates, bits, type);
@@ -176,6 +225,7 @@ static audio_element_handle_t create_http_stream(audio_stream_type_t type) {
     http_cfg.user_data = NULL;
     http_cfg.enable_playlist_parser = false;  // Ensure it's handling a single stream
     http_cfg.task_stack = 8192;               // Increase stack size for reliability
+    http_cfg.out_rb_size = 32 * 1024;
 
     audio_element_handle_t http_stream = http_stream_init(&http_cfg);
     mem_assert(http_stream);
@@ -245,7 +295,7 @@ void record_playback_task() {
     audio_event_iface_handle_t evt = audio_event_iface_init(&evt_cfg);
     audio_event_iface_set_listener(esp_periph_set_get_event_iface(set), evt);
 
-
+    
     while (1) {
     audio_event_iface_msg_t msg;
     esp_err_t ret = audio_event_iface_listen(evt, &msg, portMAX_DELAY);
@@ -254,57 +304,108 @@ void record_playback_task() {
         continue;
     }
 
-
     if ((msg.source_type == PERIPH_ID_TOUCH || msg.source_type == PERIPH_ID_BUTTON || msg.source_type == PERIPH_ID_ADC_BTN)) {
         if ((msg.cmd == PERIPH_TOUCH_TAP || msg.cmd == PERIPH_BUTTON_PRESSED || msg.cmd == PERIPH_ADC_BUTTON_PRESSED) && (int) msg.data == get_input_rec_id()) {
+            // start_time = esp_timer_get_time(); // Start timing
             ESP_LOGE(TAG, "STOP Playback and START [Record]");
-            audio_pipeline_stop(pipeline_rec);
-            audio_pipeline_wait_for_stop(pipeline_rec);
-            audio_pipeline_reset_ringbuffer(pipeline_rec);
-            audio_pipeline_reset_elements(pipeline_rec);
-            audio_pipeline_terminate(pipeline_rec);
-            // vTaskDelay(pdMS_TO_TICKS(2000));
-            audio_pipeline_stop(pipeline_play);
-            audio_pipeline_wait_for_stop(pipeline_play);
 
+            start_time = esp_timer_get_time(); // Start timing
+            audio_pipeline_pause(pipeline_play);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_pause(pipeline_play): %lld ms", (esp_timer_get_time() - start_time) / 1000);
+    
+            start_time = esp_timer_get_time(); // Start timing
+            audio_pipeline_stop(pipeline_play);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_stop(pipeline_play);: %lld ms", (esp_timer_get_time() - start_time) / 1000);
+            
+            start_time = esp_timer_get_time(); // Start timing
+            audio_pipeline_wait_for_stop(pipeline_play);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_wait_for_stop(pipeline_play);: %lld ms", (esp_timer_get_time() - start_time) / 1000);
+            
+            start_time = esp_timer_get_time(); // Start timing
+            audio_pipeline_unlink(pipeline_play);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_unlink(pipeline_play);: %lld ms", (esp_timer_get_time() - start_time) / 1000);
+
+            
             ESP_LOGI(TAG, "Link audio elements to make recorder pipeline ready");
             const char *link_tag[3] = {"i2s_reader", "wav_encoder", "http_writer"};  // Use HTTP writer for streaming
-            audio_pipeline_link(pipeline_rec, &link_tag[0], 3);
+            start_time = esp_timer_get_time(); // Start timing
+            audio_pipeline_relink(pipeline_rec, &link_tag[0], 3);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_link: %lld ms", (esp_timer_get_time() - start_time) / 1000);
 
             ESP_LOGI(TAG, "Setup HTTP server URI for recording");
+            // start_time = esp_timer_get_time(); // Start timing
             audio_element_set_uri(http_writer_el, "http://192.168.6.25:3000/upload");
+            // ESP_LOGI(TAG, "Latency for audio_element_set_uri (recording): %lld ms", (esp_timer_get_time() - start_time) / 1000);
+            
+            start_time = esp_timer_get_time(); // Start timing
             audio_pipeline_run(pipeline_rec);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_run: %lld ms", (esp_timer_get_time() - start_time) / 1000);
         } 
         else if((msg.cmd == PERIPH_BUTTON_RELEASE || msg.cmd == PERIPH_BUTTON_LONG_RELEASE) && (int) msg.data == get_input_rec_id()) {
             ESP_LOGI(TAG, "[REC] button Released. Closing Pipeline_rec.");
+            start_time = esp_timer_get_time(); // Start timing
             audio_element_set_ringbuf_done(i2s_reader_el);
-            audio_pipeline_stop(pipeline_play);
-            audio_pipeline_wait_for_stop(pipeline_play);
+            ESP_LOGI(TAG, "Latency for audio_element_set_ringbuf_done: %lld ms", (esp_timer_get_time() - start_time) / 1000);
             
+            start_time = esp_timer_get_time(); // Start timing
+            audio_pipeline_pause(pipeline_rec);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_pause(pipeline_play): %lld ms", (esp_timer_get_time() - start_time) / 1000);
+    
+            start_time = esp_timer_get_time(); // Start timing
             audio_pipeline_stop(pipeline_rec);
-            audio_pipeline_wait_for_stop(pipeline_rec);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_stop(pipeline_play);: %lld ms", (esp_timer_get_time() - start_time) / 1000);
+            
+            start_time = esp_timer_get_time(); // Start timing
+            audio_pipeline_wait_for_stop_with_ticks(pipeline_rec, pdMS_TO_TICKS(500));
+            ESP_LOGI(TAG, "Latency for audio_pipeline_wait_for_stop(pipeline_play);: %lld ms", (esp_timer_get_time() - start_time) / 1000);
+            
+            start_time = esp_timer_get_time(); // Start timing
+            audio_pipeline_unlink(pipeline_rec);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_unlink(pipeline_play);: %lld ms", (esp_timer_get_time() - start_time) / 1000);
+
             ESP_LOGI(TAG, "Link audio elements to make playback pipeline ready");
             const char *link_tag[4] = {"http_reader", "wav_decoder", "filter_upsample", "i2s_writer"};
-            audio_pipeline_link(pipeline_play, &link_tag[0], 4);
+            start_time = esp_timer_get_time(); // Start timing
+            audio_pipeline_relink(pipeline_play, &link_tag[0], 4);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_link (playback): %lld ms", (esp_timer_get_time() - start_time) / 1000);
 
             ESP_LOGI(TAG, "Setup HTTP server URI for playback");
+            start_time = esp_timer_get_time(); // Start timing
             audio_element_set_uri(http_reader_el, "http://192.168.6.25:3000/stream");
+            ESP_LOGI(TAG, "Latency for audio_element_set_uri (playback): %lld ms", (esp_timer_get_time() - start_time) / 1000);
+            
+            start_time = esp_timer_get_time(); // Start timing
             audio_pipeline_run(pipeline_play);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_run (playback): %lld ms", (esp_timer_get_time() - start_time) / 1000);
         }
         else if ((msg.cmd == PERIPH_TOUCH_TAP || msg.cmd == PERIPH_BUTTON_PRESSED || msg.cmd == PERIPH_ADC_BUTTON_PRESSED) && (int) msg.data == get_input_play_id()) {
             ESP_LOGI(TAG, "STOP [Record] and START Playback");
             
+            start_time = esp_timer_get_time(); // Start timing
             audio_pipeline_stop(pipeline_play);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_stop (playback): %lld ms", (esp_timer_get_time() - start_time) / 1000);
+            
+            start_time = esp_timer_get_time(); // Start timing
             audio_pipeline_wait_for_stop(pipeline_play);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_wait_for_stop (playback): %lld ms", (esp_timer_get_time() - start_time) / 1000);
+            
             ESP_LOGI(TAG, "Link audio elements to make playback pipeline ready");
             const char *link_tag[4] = {"http_reader", "wav_decoder", "filter_upsample", "i2s_writer"};
+            start_time = esp_timer_get_time(); // Start timing
             audio_pipeline_link(pipeline_play, &link_tag[0], 4);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_link (playback): %lld ms", (esp_timer_get_time() - start_time) / 1000);
 
             ESP_LOGI(TAG, "Setup HTTP server URI for playback");
+            start_time = esp_timer_get_time(); // Start timing
             audio_element_set_uri(http_reader_el, "http://192.168.6.25:3000/stream");
+            ESP_LOGI(TAG, "Latency for audio_element_set_uri (playback): %lld ms", (esp_timer_get_time() - start_time) / 1000);
+            
+            start_time = esp_timer_get_time(); // Start timing
             audio_pipeline_run(pipeline_play);
+            ESP_LOGI(TAG, "Latency for audio_pipeline_run (playback): %lld ms", (esp_timer_get_time() - start_time) / 1000);
         }
     }
+
 }
 
     ESP_LOGI(TAG, "[ 4 ] Stop audio_pipeline");

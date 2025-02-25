@@ -7,15 +7,24 @@ import multer from 'multer';
 import moment from 'moment';
 import OpenAI from 'openai';
 import { fileURLToPath } from "url";
+import { ElevenLabsClient } from 'elevenlabs';
 
 const app = express();
 const PORT = 3000;
-const ELEVEN_LABS_API_KEY = "sk_058400db7c201fdfa0b88231476cac18031021de627dc1d0";
-const openai = new OpenAI({ apiKey: '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' });
+const ELEVEN_LABS_API_KEY = "sk_627dc1d0";
+const openai = new OpenAI({ apiKey: 'srv-2kfg54A' });
 const voiceId = "k0IXsdJ59XctG7kP1dFW";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+let newResponse = 0;
+
+const client = new ElevenLabsClient({
+    apiKey: ELEVEN_LABS_API_KEY,
+});
+
+
 
 async function chat(prompt) {
     const startTime = Date.now();
@@ -69,6 +78,7 @@ async function stt(wavFilePath) {
 }
 
 
+
 async function streamTTS(text, res) {
     const startTime = Date.now();
     console.log(`[${moment().format()}] 🔊 Streaming TTS`);
@@ -87,7 +97,6 @@ async function streamTTS(text, res) {
             voice_settings: { stability: 0.5, similarity_boost: 0.5 },
         }),
     };
-
 
     try {
         const response = await fetch(url, requestOptions);
@@ -109,9 +118,51 @@ async function streamTTS(text, res) {
     }
 }
 
+// async function streamTTS(text, res) {
+//     const startTime = Date.now();
+//     console.log(`[${moment().format()}] 🔊 Streaming TTS`);
+
+//     const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`;
+
+//     const requestOptions = {
+//         method: "POST",
+//         headers: {
+//             "Content-Type": "application/json",
+//             "xi-api-key": ELEVEN_LABS_API_KEY,
+//         },
+//         body: JSON.stringify({
+//             text: text,
+//             model_id: "eleven_monolingual_v1",
+//             voice_settings: { stability: 0.5, similarity_boost: 0.5 },
+//         }),
+//     };
+
+
+//     try {
+//         const response = await fetch(url, requestOptions);
+//         if (!response.ok) {
+//             throw new Error(`HTTP error! Status: ${response.status}`);
+//         }
+
+//         // Set headers for streaming audio
+//         res.setHeader("Content-Type", "audio/mpeg");
+
+//         // Stream the Eleven Labs response directly to the client
+//         response.body.pipe(res);
+
+//         const latency = Date.now() - startTime;
+//         console.log(`[${moment().format()}] ✅ TTS Streamed (Latency: ${latency} ms)`);
+//     } catch (error) {
+//         console.error("Error streaming TTS:", error);
+//         res.status(500).send("Error streaming TTS");
+//     }
+// }
+
 
 
 // Get Host IP Address
+
+
 function getHostIP() {
     const interfaces = os.networkInterfaces();
     for (const key in interfaces) {
@@ -213,6 +264,13 @@ app.post('/upload', upload.single('audio'), (req, res) => {
             const aiResponse = await chat(userText);
             latestText = aiResponse
         }
+
+        // **Set newResponse flag to 1**
+        newResponse = 1;
+        console.log("✅ New response ready for streaming!");
+        
+        res.send({ status: "AI RESPONSE GENERATED"});
+
     });
 
     req.on('error', (err) => {
@@ -221,12 +279,45 @@ app.post('/upload', upload.single('audio'), (req, res) => {
     });
 });
 
+
 app.get("/stream", async (req, res) => {
-    const text = latestText || "The Response did not generated please try again.";
+    if (newResponse === 0) {
+        return res.status(204).end(); // No content, ESP should retry later
+    }
+    newResponse = 0; // Reset flag as the ESP has started receiving data
     const startTime = Date.now();
-    await streamTTS(text, res);
-    const latency = Date.now() - startTime;
+    const text = latestText || "Hello, I'm Ansh Rastogi from IIT Roorkee, It is the text to test.";
+
+    try {
+        const audioStream = await client.generate({
+            voice: voiceId,
+            model_id: 'eleven_turbo_v2_5',
+            text,
+        });
+
+        res.setHeader("Content-Type", "audio/mpeg");
+
+        const chunks = [];
+        for await (const chunk of audioStream) {
+            const latency = Date.now() - startTime; // Calculate latency
+            console.log(`API latency: ${latency} ms`); // Log the latency
+            console.log(`Received chunk of size: ${chunk.length} bytes`); // Log chunk size
+            chunks.push(chunk);
+            res.write(chunk); // Stream the chunk to the response
+        }
+
+        res.end(); // End the response after streaming all chunks
+    } catch (error) {
+        console.error("Error streaming speech:", error);
+        res.status(500).send("Error streaming speech");
+    }
 });
+
+app.get('/status', (req, res) => {
+    res.setHeader('Content-Type', 'text/plain');
+    res.send(newResponse ? '1' : '0');
+});
+
 
 app.get('/', (req, res) => {
     console.log("📄 [HOME] Serving the home page.");
@@ -236,6 +327,7 @@ app.get('/', (req, res) => {
         <ul>
             <li><a href="/stream">🎵 Stream Latest MP3</a></li>
             <li>📤 Use <b>POST /upload</b> to upload a WAV file</li>
+            <li> Check <a href="/status">Status</a> of the Response </li> 
         </ul>`
     );
 });
