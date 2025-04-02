@@ -20,7 +20,7 @@
 #include "periph_button.h"
 #include "periph_touch.h"
 #include "periph_adc_button.h"
-#include "esp_timer.h" // Include for timing functions
+#include "esp_timer.h"
 
 #include "cJSON.h"
 
@@ -29,6 +29,22 @@
 #include "input_key_service.h"
 #include "audio_idf_version.h"
 #include <stdbool.h>
+
+
+#include <stdlib.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/event_groups.h"
+#include "esp_wifi.h"
+#include "esp_eap_client.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "esp_system.h"
+#include "nvs_flash.h"
+#include "esp_netif.h"
+#include "esp_smartconfig.h"
+#include "esp_mac.h"
+
 
 #include "mp3_decoder.h"
 #if (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 1, 0))
@@ -54,7 +70,6 @@ static esp_periph_set_handle_t set;
 
 static EventGroupHandle_t EXIT_FLAG;
 #define DEMO_EXIT_BIT (BIT0)
-
 
 esp_err_t _http_stream_event_handle(http_stream_event_msg_t *msg)
 {
@@ -121,7 +136,6 @@ esp_err_t _http_stream_event_handle(http_stream_event_msg_t *msg)
     return ESP_OK;
 }
 
-
 static char response_buffer[8];  // Buffer for storing "1" or "0"
 
 esp_err_t _http_event_handler(esp_http_client_event_t *evt) {
@@ -141,7 +155,7 @@ bool wait_for_new_response() {
     start_time = esp_timer_get_time();
     for (int i = 0; i < max_attempts; i++) {
         esp_http_client_config_t config = {
-            .url = "http://192.168.6.25:3000/status",
+            .url = "http://192.168.16.25:3000/status",
             .event_handler = _http_event_handler,
         };
 
@@ -233,7 +247,6 @@ static audio_element_handle_t create_http_stream(audio_stream_type_t type) {
 }
 
 
-
 static audio_element_handle_t create_filter(int source_rate, int source_channel, int dest_rate, int dest_channel, int mode)
 {
     rsp_filter_cfg_t rsp_cfg = DEFAULT_RESAMPLE_FILTER_CONFIG();
@@ -295,7 +308,6 @@ void record_playback_task() {
     audio_event_iface_handle_t evt = audio_event_iface_init(&evt_cfg);
     audio_event_iface_set_listener(esp_periph_set_get_event_iface(set), evt);
 
-    
     while (1) {
     audio_event_iface_msg_t msg;
     esp_err_t ret = audio_event_iface_listen(evt, &msg, portMAX_DELAY);
@@ -309,9 +321,9 @@ void record_playback_task() {
             // start_time = esp_timer_get_time(); // Start timing
             ESP_LOGE(TAG, "STOP Playback and START [Record]");
 
-            start_time = esp_timer_get_time(); // Start timing
-            audio_pipeline_pause(pipeline_play);
-            ESP_LOGI(TAG, "Latency for audio_pipeline_pause(pipeline_play): %lld ms", (esp_timer_get_time() - start_time) / 1000);
+            // start_time = esp_timer_get_time(); // Start timing
+            // audio_pipeline_pause(pipeline_play);
+            // ESP_LOGI(TAG, "Latency for audio_pipeline_pause(pipeline_play): %lld ms", (esp_timer_get_time() - start_time) / 1000);
     
             start_time = esp_timer_get_time(); // Start timing
             audio_pipeline_stop(pipeline_play);
@@ -334,7 +346,7 @@ void record_playback_task() {
 
             ESP_LOGI(TAG, "Setup HTTP server URI for recording");
             // start_time = esp_timer_get_time(); // Start timing
-            audio_element_set_uri(http_writer_el, "http://192.168.6.25:3000/upload");
+            audio_element_set_uri(http_writer_el, "http://192.168.16.25:3000/upload");
             // ESP_LOGI(TAG, "Latency for audio_element_set_uri (recording): %lld ms", (esp_timer_get_time() - start_time) / 1000);
             
             start_time = esp_timer_get_time(); // Start timing
@@ -347,9 +359,9 @@ void record_playback_task() {
             audio_element_set_ringbuf_done(i2s_reader_el);
             ESP_LOGI(TAG, "Latency for audio_element_set_ringbuf_done: %lld ms", (esp_timer_get_time() - start_time) / 1000);
             
-            start_time = esp_timer_get_time(); // Start timing
-            audio_pipeline_pause(pipeline_rec);
-            ESP_LOGI(TAG, "Latency for audio_pipeline_pause(pipeline_play): %lld ms", (esp_timer_get_time() - start_time) / 1000);
+            // start_time = esp_timer_get_time(); // Start timing
+            // audio_pipeline_pause(pipeline_rec);
+            // ESP_LOGI(TAG, "Latency for audio_pipeline_pause(pipeline_play): %lld ms", (esp_timer_get_time() - start_time) / 1000);
     
             start_time = esp_timer_get_time(); // Start timing
             audio_pipeline_stop(pipeline_rec);
@@ -371,7 +383,7 @@ void record_playback_task() {
 
             ESP_LOGI(TAG, "Setup HTTP server URI for playback");
             start_time = esp_timer_get_time(); // Start timing
-            audio_element_set_uri(http_reader_el, "http://192.168.6.25:3000/stream");
+            audio_element_set_uri(http_reader_el, "http://192.168.16.25:3000/stream");
             ESP_LOGI(TAG, "Latency for audio_element_set_uri (playback): %lld ms", (esp_timer_get_time() - start_time) / 1000);
             
             start_time = esp_timer_get_time(); // Start timing
@@ -397,7 +409,7 @@ void record_playback_task() {
 
             ESP_LOGI(TAG, "Setup HTTP server URI for playback");
             start_time = esp_timer_get_time(); // Start timing
-            audio_element_set_uri(http_reader_el, "http://192.168.6.25:3000/stream");
+            audio_element_set_uri(http_reader_el, "http://192.168.16.25:3000/stream");
             ESP_LOGI(TAG, "Latency for audio_element_set_uri (playback): %lld ms", (esp_timer_get_time() - start_time) / 1000);
             
             start_time = esp_timer_get_time(); // Start timing
@@ -441,10 +453,217 @@ void record_playback_task() {
     audio_element_deinit(http_writer_el);
 }
 
+static const char *WIFI_TAG = "WIFI_PROVISIONING"; // Renamed TAG for Wi-Fi provisioning
+static EventGroupHandle_t s_wifi_event_group;
+static const int CONNECTED_BIT = BIT0;
+static const int ESPTOUCH_DONE_BIT = BIT1;
+
+static void smartconfig_example_task(void * parm);
+
+static void event_handler(void* arg, esp_event_base_t event_base,
+                          int32_t event_id, void* event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        xTaskCreate(smartconfig_example_task, "smartconfig_example_task", 4096, NULL, 3, NULL);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        esp_wifi_connect();
+        xEventGroupClearBits(s_wifi_event_group, CONNECTED_BIT);
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        xEventGroupSetBits(s_wifi_event_group, CONNECTED_BIT);
+    } else if (event_base == SC_EVENT && event_id == SC_EVENT_SCAN_DONE) {
+        ESP_LOGI(WIFI_TAG, "Scan done");
+    } else if (event_base == SC_EVENT && event_id == SC_EVENT_FOUND_CHANNEL) {
+        ESP_LOGI(WIFI_TAG, "Found channel");
+    } else if (event_base == SC_EVENT && event_id == SC_EVENT_GOT_SSID_PSWD) {
+        ESP_LOGI(WIFI_TAG, "Got SSID and password");
+
+        smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)event_data;
+        wifi_config_t wifi_config;
+        uint8_t ssid[33] = { 0 };
+        uint8_t password[65] = { 0 };
+        uint8_t rvd_data[33] = { 0 };
+
+        bzero(&wifi_config, sizeof(wifi_config_t));
+        memcpy(wifi_config.sta.ssid, evt->ssid, sizeof(wifi_config.sta.ssid));
+        memcpy(wifi_config.sta.password, evt->password, sizeof(wifi_config.sta.password));
+
+#ifdef CONFIG_SET_MAC_ADDRESS_OF_TARGET_AP
+        wifi_config.sta.bssid_set = evt->bssid_set;
+        if (wifi_config.sta.bssid_set == true) {
+            ESP_LOGI(WIFI_TAG, "Set MAC address of target AP: "MACSTR" ", MAC2STR(evt->bssid));
+            memcpy(wifi_config.sta.bssid, evt->bssid, sizeof(wifi_config.sta.bssid));
+        }
+#endif
+
+        memcpy(ssid, evt->ssid, sizeof(evt->ssid));
+        memcpy(password, evt->password, sizeof(evt->password));
+
+        ESP_LOGI(WIFI_TAG, "SSID:%s", ssid);
+        ESP_LOGI(WIFI_TAG, "PASSWORD:%s", password);
+        if (evt->type == SC_TYPE_ESPTOUCH_V2) {
+            ESP_ERROR_CHECK( esp_smartconfig_get_rvd_data(rvd_data, sizeof(rvd_data)) );
+            ESP_LOGI(WIFI_TAG, "RVD_DATA:");
+            for (int i=0; i<33; i++) {
+                printf("%02x ", rvd_data[i]);
+            }
+            printf("\n");
+        }
+
+        ESP_ERROR_CHECK( esp_wifi_disconnect() );
+        ESP_ERROR_CHECK( esp_wifi_set_config(WIFI_IF_STA, &wifi_config) );
+        esp_wifi_connect();
+    } else if (event_base == SC_EVENT && event_id == SC_EVENT_SEND_ACK_DONE) {
+        xEventGroupSetBits(s_wifi_event_group, ESPTOUCH_DONE_BIT);
+    }
+}
+
+static void initialise_wifi(void)
+{
+    ESP_ERROR_CHECK(esp_netif_init());
+    s_wifi_event_group = xEventGroupCreate();
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+    assert(sta_netif);
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
+
+    ESP_ERROR_CHECK( esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL) );
+    ESP_ERROR_CHECK( esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL) );
+    ESP_ERROR_CHECK( esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL) );
+
+    ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_STA) );
+    ESP_ERROR_CHECK( esp_wifi_start() );
+    // Now try to get saved config
+    wifi_config_t wifi_config;
+    ESP_ERROR_CHECK(esp_wifi_get_config(WIFI_IF_STA, &wifi_config));
+
+    // Attempt to connect using stored credentials
+
+    ESP_LOGI(WIFI_TAG, "Saved Credentials in NVS, SSID: %s  PASSWORD: %s", wifi_config.sta.ssid, wifi_config.sta.password);
+    int retry_count = 0;
+    while (retry_count < 10) {
+        ESP_LOGI(WIFI_TAG, "Attempting to connect to WiFi, try %d", retry_count + 1);
+        esp_wifi_connect();
+        EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, CONNECTED_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(5000));
+        if (bits & CONNECTED_BIT) {
+            ESP_LOGI(WIFI_TAG, "Successfully connected to WiFi");
+            return;
+        }
+        retry_count++;
+    }
+
+    ESP_LOGI(WIFI_TAG, "Failed to connect after 10 attempts, starting SmartConfig");
+    xTaskCreate(smartconfig_example_task, "smartconfig_example_task", 4096, NULL, 3, NULL);
+}
+
+static void smartconfig_example_task(void * parm)
+{
+    EventBits_t uxBits;
+
+    ESP_LOGI("SmartConfig", "Stopping previous SmartConfig session (if any)");
+    esp_smartconfig_stop();
+
+    ESP_LOGI("SmartConfig", "Setting SmartConfig type...");
+    esp_err_t err = esp_smartconfig_set_type(SC_TYPE_ESPTOUCH);
+    if (err != ESP_OK) {
+        ESP_LOGE("SmartConfig", "Failed to set SmartConfig type: %d", err);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI("SmartConfig", "Starting SmartConfig...");
+    smartconfig_start_config_t cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
+    err = esp_smartconfig_start(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE("SmartConfig", "Failed to start SmartConfig: %d", err);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    while (1) {
+        uxBits = xEventGroupWaitBits(s_wifi_event_group, CONNECTED_BIT | ESPTOUCH_DONE_BIT, true, false, portMAX_DELAY);
+        if (uxBits & CONNECTED_BIT) {
+            ESP_LOGI("SmartConfig", "WiFi Connected to AP");
+        }
+        if (uxBits & ESPTOUCH_DONE_BIT) {
+            ESP_LOGI("SmartConfig", "SmartConfig completed");
+            esp_smartconfig_stop();
+            vTaskDelete(NULL);
+        }
+    }
+}
+
+// static void try_connecting_with_saved_credentials(void)
+// {
+//     // Initialize WiFi first
+//     ESP_ERROR_CHECK(esp_netif_init());
+//     s_wifi_event_group = xEventGroupCreate();
+//     ESP_ERROR_CHECK(esp_event_loop_create_default());
+//     esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+//     assert(sta_netif);
+
+//     // Initialize WiFi with default config
+//     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+//     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+//     // Register event handlers
+//     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
+//     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
+//     ESP_ERROR_CHECK(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
+
+//     // Set WiFi mode to station
+//     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
+//     // Now try to get saved config
+//     wifi_config_t wifi_config;
+//     ESP_ERROR_CHECK(esp_wifi_get_config(WIFI_IF_STA, &wifi_config));
+
+//     if (strlen((char *)wifi_config.sta.ssid) == 0) {
+//         ESP_LOGI(TAG, "No saved Wi-Fi credentials found. Starting SmartConfig...");
+//         ESP_ERROR_CHECK(esp_wifi_start());
+//         xTaskCreate(smartconfig_example_task, "smartconfig_example_task", 4096, NULL, 3, NULL);
+//         return;
+//     }
+
+//     ESP_LOGI(TAG, "Attempting to connect using saved credentials (SSID: %s)...", wifi_config.sta.ssid);
+//     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+//     ESP_ERROR_CHECK(esp_wifi_start());
+//     ESP_ERROR_CHECK(esp_wifi_connect());
+
+//     int attempts = 0;
+//     while (attempts < 5) {
+//         EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, 
+//                                              CONNECTED_BIT, 
+//                                              pdFALSE, 
+//                                              pdFALSE, 
+//                                              pdMS_TO_TICKS(5000));
+
+//         if (bits & CONNECTED_BIT) {
+//             ESP_LOGI(TAG, "Connected to WiFi!");
+//             return;
+//         } else {
+//             ESP_LOGW(TAG, "WiFi connection attempt %d failed, retrying...", attempts + 1);
+//             esp_wifi_connect(); // Retry connection
+//         }
+
+//         attempts++;
+//     }
+
+//     ESP_LOGE(TAG, "Failed to connect after 10 attempts. Starting SmartConfig...");
+//     // Ensure WiFi is disconnected before starting SmartConfig
+//     ESP_ERROR_CHECK(esp_wifi_disconnect());
+//     ESP_ERROR_CHECK(esp_wifi_stop());
+
+//     vTaskDelay(pdMS_TO_TICKS(1000)); // Small delay before starting SmartConfig
+
+//     xTaskCreate(smartconfig_example_task, "smartconfig_example_task", 4096, NULL, 3, NULL);
+// }
 
 void app_main(void) {
     esp_log_level_set("*", ESP_LOG_WARN);
     esp_log_level_set(TAG, ESP_LOG_INFO);
+    esp_log_level_set(WIFI_TAG, ESP_LOG_INFO);
 
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES) {
@@ -459,27 +678,36 @@ void app_main(void) {
     tcpip_adapter_init();
 #endif
 
+    // try_connecting_with_saved_credentials();
+    
+    initialise_wifi();
     // Initialize peripherals management
     esp_periph_config_t periph_cfg = DEFAULT_ESP_PERIPH_SET_CONFIG();
     set = esp_periph_set_init(&periph_cfg);
+ 
+    // periph_wifi_cfg_t wifi_cfg = { 
+    //     .wifi_config.sta.ssid = {SSID},
+    //     .wifi_config.sta.password = {PASSWORD},
+    // };
 
     // Initialize Wi-Fi peripheral
-    periph_wifi_cfg_t wifi_cfg = {
+    // periph_wifi_cfg_t wifi_cfg = {
         // .wifi_config.sta.ssid = "JioPhone Next",
         // .wifi_config.sta.password = "anisharma",
         // .wifi_config.sta.ssid = "motorola edge 50 pro_3243",
         // .wifi_config.sta.password = "123456789",
         // .wifi_config.sta.ssid = "OnePlus Nord CE 2 Lite 5G",
         // .wifi_config.sta.password = "123456789",
-        .wifi_config.sta.ssid = "Rastogi_ji",
-        .wifi_config.sta.password = "asaan hai",
+        // .wifi_config.sta.ssid = "Rastogi_ji",
+        // .wifi_config.sta.password = "asaan hai",
         // .wifi_config.sta.ssid = CONFIG_WIFI_SSID,
         // .wifi_config.sta.password = "CONFIG_WIFI_PASSWORD",
-    };
+    // };
 
-    esp_periph_handle_t wifi_handle = periph_wifi_init(&wifi_cfg);
-    esp_periph_start(set, wifi_handle);
-    periph_wifi_wait_for_connected(wifi_handle, portMAX_DELAY);
+    // esp_periph_handle_t wifi_handle = periph_wifi_init(&wifi_cfg);
+    // esp_periph_start(set, wifi_handle);
+    // periph_wifi_wait_for_connected(wifi_handle, portMAX_DELAY);
+
 
     // Initialize Button peripheral
     audio_board_key_init(set);

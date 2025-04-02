@@ -11,8 +11,8 @@ import { ElevenLabsClient } from 'elevenlabs';
 
 const app = express();
 const PORT = 3000;
-const ELEVEN_LABS_API_KEY = "21de";
-const openai = new OpenAI({ apiKey: 'sNr4A' });
+const ELEVEN_LABS_API_KEY = "sk_7dc1d0";
+const openai = new OpenAI({ apiKey: 'sk-proOQnPYrv-2kfg54A' });
 const voiceId = "k0IXsdJ59XctG7kP1dFW";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -36,7 +36,7 @@ async function chat(prompt) {
             { role: 'user', content: prompt }
         ],
         temperature: 1.25,
-        max_tokens: 20
+        max_tokens: 50
     });
     const aiResponse = response.choices[0].message.content.trim();
     const latency = Date.now() - startTime;
@@ -237,7 +237,7 @@ app.post('/upload', upload.single('audio'), (req, res) => {
     let audioData = [];
 
     req.on('data', (chunk) => {
-        console.log(`Received chunk of size: ${chunk.length}`);
+        process.stdout.write(`\rReceived chunk of size: ${chunk.length}`); // Update log in the same line
         totalBytes += chunk.length;
         audioData.push(chunk);
     });
@@ -247,30 +247,29 @@ app.post('/upload', upload.single('audio'), (req, res) => {
 
         // Prepare WAV file
         const wavBuffer = createWavFile(audioBuffer, sampleRate, bitDepth, channels);
-        
-        fs.writeFile(wavFilePath, wavBuffer, (err) => {
+        const startTime = Date.now();
+        fs.writeFile(wavFilePath, wavBuffer, async (err) => {
             if (err) {
                 console.error('Error writing file:', err);
                 return res.status(500).send('Error writing file');
             }
             
-            console.log(`File ${wavFilename} written successfully with ${totalBytes} bytes.`);
+            const latency = Date.now() - startTime;
+            console.log(`File ${wavFilename} written successfully with ${totalBytes} bytes (Latency: ${latency} ms)`);
+        
+            // Processing the audio
+            const userText = await stt(wavFilePath); 
+            if (userText) {
+                const aiResponse = await chat(userText);
+                latestText = aiResponse
+            }
+
+            // **Set newResponse flag to 1**
+            newResponse = 1;
+            console.log("✅ New response ready for streaming!");
+            
+            res.send({ status: "AI RESPONSE GENERATED"});
         });
-        
-
-        // Processing the audio
-        const userText = await stt(wavFilePath); 
-        if (userText) {
-            const aiResponse = await chat(userText);
-            latestText = aiResponse
-        }
-
-        // **Set newResponse flag to 1**
-        newResponse = 1;
-        console.log("✅ New response ready for streaming!");
-        
-        res.send({ status: "AI RESPONSE GENERATED"});
-
     });
 
     req.on('error', (err) => {
@@ -307,8 +306,9 @@ app.get("/stream", async (req, res) => {
         const chunks = [];
         for await (const chunk of audioStream) {
             const latency = Date.now() - startTime; // Calculate latency
-            console.log(`API latency: ${latency} ms`); // Log the latency
-            console.log(`Received chunk of size: ${chunk.length} bytes`); // Log chunk size
+            // console.log(`API latency: ${latency} ms`); // Log the latency
+            // console.log(`Received chunk of size: ${chunk.length} bytes`); // Log chunk size
+            process.stdout.write(`\rUploaded chunk of size: ${chunk.length} bytes`);
             chunks.push(chunk);
             res.write(chunk); // Stream the chunk to the response
         }
